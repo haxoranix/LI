@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LinkedIn Carousel Architect - Final Stable</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        :root { --primary: #0077b5; --sidebar: #ffffff; --bg: #f3f4f6; }
+        body { font-family: 'Inter', -apple-system, sans-serif; margin: 0; display: flex; height: 100vh; background: var(--bg); overflow: hidden; }
+
+        /* Sidebar */
+        #sidebar { width: 400px; background: var(--sidebar); border-right: 1px solid #ddd; display: flex; flex-direction: column; }
+        .section { padding: 15px; border-bottom: 1px solid #eee; }
+        .scroll-area { flex-grow: 1; overflow-y: auto; padding: 15px; }
+        #canvas { flex-grow: 1; overflow-y: auto; display: flex; flex-direction: column; align-items: center; padding: 60px 0; gap: 40px; scroll-behavior: smooth; }
+
+        /* SLIDE CONTAINER */
+        .slide {
+            width: 432px; height: 540px; min-height: 540px; max-height: 540px;
+            background: white; padding: 45px; box-sizing: border-box;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1); display: flex; flex-direction: column;
+            position: relative; border-radius: 4px; overflow: hidden;
+        }
+
+        .slide h2 { margin: 0 0 15px 0; font-size: 30px; font-weight: 800; line-height: 1.2; outline: none; z-index: 2; }
+        
+        /* CONTENT BOX - FIXED */
+        .content-box { 
+            font-size: 18px; line-height: 1.5; outline: none; 
+            /* REMOVED fixed height, added max-height only */
+            min-height: 50px; 
+            max-height: 340px;
+            overflow: hidden; 
+            display: block;
+            z-index: 2;
+        }
+
+        /* Boundary Guide (Visual Only) */
+        .boundary-guide {
+            position: absolute; bottom: 65px; left: 45px; right: 45px;
+            border-bottom: 1px dashed rgba(0,0,0,0.1); pointer-events: none; z-index: 1;
+        }
+
+        .slide-footer { position: absolute; bottom: 0; left: 0; width: 100%; display: flex; justify-content: space-between; padding: 12px 45px; font-size: 11px; box-sizing: border-box; }
+        .footer-line { position: absolute; top: 0; left: 0; width: 100%; height: 2px; }
+
+        /* UI Controls */
+        .theme-card, .slide-card { background: #f9fafb; border: 1px solid #e5e7eb; padding: 10px; border-radius: 6px; margin-bottom: 8px; }
+        .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        input[type="text"], select { flex-grow: 1; padding: 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
+        input[type="color"] { border: none; width: 30px; height: 30px; cursor: pointer; background:none; padding:0; }
+        
+        .btn-add { background: var(--primary); color: white; border: none; padding: 10px; width: 100%; border-radius: 5px; font-weight: bold; cursor: pointer; }
+        .btn-download { background: #059669; color: white; border: none; padding: 15px; width: 100%; border-radius: 5px; font-weight: bold; cursor: pointer; margin-top: 10px; }
+        .toolbar { display: flex; gap: 5px; padding: 10px; background: #fff; border-bottom: 1px solid #ddd; }
+        .toolbar button { width: 32px; height: 32px; border: 1px solid #ccc; background: white; cursor: pointer; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <div class="section">
+        <h4 style="margin:0 0 10px 0">Global Branding</h4>
+        <input type="text" id="m-footer-l" placeholder="Left Footer" oninput="syncBranding()" style="margin-bottom:5px; width:95%">
+        <input type="text" id="m-footer-r" placeholder="Right Footer" oninput="syncBranding()" style="width:95%">
+    </div>
+
+    <div class="section">
+        <h4 style="margin:0 0 10px 0">Color Sets</h4>
+        <div id="theme-list"></div>
+        <button class="btn-add" style="background:#4f46e5; font-size:12px;" onclick="addNewTheme()">+ New Theme Set</button>
+    </div>
+
+    <div class="scroll-area">
+        <h4 style="margin:0 0 10px 0">Slide Deck</h4>
+        <div id="slide-list"></div>
+        <button class="btn-add" onclick="addSlide()">+ Add Slide</button>
+        <button class="btn-download" onclick="exportPDF()">Export PDF</button>
+    </div>
+</div>
+
+<div style="flex-grow:1; display:flex; flex-direction:column;">
+    <div class="toolbar">
+        <button onclick="document.execCommand('bold')">B</button>
+        <button onclick="document.execCommand('italic')">I</button>
+        <button onclick="document.execCommand('insertUnorderedList')">•</button>
+    </div>
+    <div id="canvas"></div>
+</div>
+
+<script>
+    let state = {
+        themes: JSON.parse(localStorage.getItem('hc_themes_v3')) || [
+            { id: 0, name: 'Standard', bg: '#ffffff', title: '#0077b5', text: '#333333', line: '#0077b5' }
+        ],
+        slides: [],
+        fLeft: localStorage.getItem('hc_fl_v3') || '',
+        fRight: localStorage.getItem('hc_fr_v3') || ''
+    };
+
+    function init() {
+        document.getElementById('m-footer-l').value = state.fLeft;
+        document.getElementById('m-footer-r').value = state.fRight;
+        renderThemeList(); // Render HTML inputs ONCE
+        addSlide();
+    }
+
+    // --- THEME ENGINE ---
+    function renderThemeList() {
+        const container = document.getElementById('theme-list');
+        container.innerHTML = '';
+        state.themes.forEach(t => {
+            const card = document.createElement('div');
+            card.className = 'theme-card';
+            card.innerHTML = `
+                <input type="text" value="${t.name}" onchange="updateThemeName(${t.id}, this.value)" style="margin-bottom:5px;">
+                <div class="row">
+                    <input type="color" value="${t.bg}" oninput="liveColor(${t.id}, 'bg', this.value)" onchange="saveTheme()">
+                    <input type="color" value="${t.title}" oninput="liveColor(${t.id}, 'title', this.value)" onchange="saveTheme()">
+                    <input type="color" value="${t.text}" oninput="liveColor(${t.id}, 'text', this.value)" onchange="saveTheme()">
+                    <input type="color" value="${t.line}" oninput="liveColor(${t.id}, 'line', this.value)" onchange="saveTheme()">
+                </div>
+            `;
+            container.appendChild(card);
+        });
+    }
+
+    function liveColor(id, prop, val) {
+        // 1. Update State (Memory Only)
+        const theme = state.themes.find(t => t.id === id);
+        theme[prop] = val;
+        
+        // 2. Apply CSS instantly to all matching slides
+        state.slides.forEach(s => {
+            if (s.themeId === id) applySlideStyle(s.id);
+        });
+        // Note: We do NOT re-render the list or save to storage here (keeps it smooth)
+    }
+
+    function saveTheme() {
+        // Triggered only when user releases the color picker
+        localStorage.setItem('hc_themes_v3', JSON.stringify(state.themes));
+    }
+    
+    function updateThemeName(id, val) {
+        state.themes.find(t => t.id === id).name = val;
+        saveTheme();
+        updateDropdowns();
+    }
+
+    function addNewTheme() {
+        state.themes.push({ id: Date.now(), name: 'New Set', bg: '#ffffff', title: '#000', text: '#333', line: '#eee' });
+        renderThemeList();
+        updateDropdowns();
+    }
+
+    // --- SLIDES ---
+    function addSlide() {
+        const id = Date.now();
+        state.slides.push({ id, themeId: state.themes[0].id });
+
+        // Sidebar
+        const card = document.createElement('div');
+        card.className = 'slide-card';
+        card.id = `side-${id}`;
+        card.innerHTML = `<div class="row"><select onchange="setSlideTheme(${id}, this.value)" class="t-sel">${state.themes.map(t=>`<option value="${t.id}">${t.name}</option>`).join('')}</select><button onclick="removeSlide(${id})" style="color:red;border:none;background:none;cursor:pointer">✕</button></div>`;
+        document.getElementById('slide-list').appendChild(card);
+
+        // Canvas
+        const slide = document.createElement('div');
+        slide.className = 'slide';
+        slide.id = `canv-${id}`;
+        slide.innerHTML = `
+            <h2 contenteditable="true">Heading</h2>
+            <div class="content-box" contenteditable="true">Start typing...</div>
+            <div class="boundary-guide"></div>
+            <div class="slide-footer">
+                <div class="footer-line"></div>
+                <span class="fl">${state.fLeft}</span>
+                <span class="fr">${state.fRight}</span>
+            </div>
+        `;
+        document.getElementById('canvas').appendChild(slide);
+        
+        // AUTO-PAGINATION LOGIC (The Fix)
+        const box = slide.querySelector('.content-box');
+        box.addEventListener('keydown', (e) => {
+            // "scrollHeight" is the height of text. "clientHeight" is height of visible box.
+            // We set max-height: 340px in CSS.
+            // If text is small, scrollHeight == clientHeight (e.g. 50px).
+            // If text is large, scrollHeight grows.
+            
+            // Check: Is the text height nearly at the limit (315px)?
+            const isFull = box.scrollHeight > 315; 
+            
+            if (e.key === 'Enter' && isFull) {
+                e.preventDefault(); // Stop the Enter key
+                addSlide(); // Create new slide
+                // Move focus to next slide
+                setTimeout(() => {
+                    const nextBox = document.querySelector('#canvas .slide:last-child .content-box');
+                    nextBox.focus();
+                }, 50);
+            }
+        });
+
+        applySlideStyle(id);
+        slide.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    function applySlideStyle(sid) {
+        const sData = state.slides.find(x => x.id === sid);
+        const t = state.themes.find(x => x.id === sData.themeId);
+        const el = document.getElementById(`canv-${sid}`);
+        if(!el || !t) return;
+        
+        el.style.backgroundColor = t.bg;
+        el.querySelector('h2').style.color = t.title;
+        el.querySelector('.content-box').style.color = t.text;
+        el.querySelector('.footer-line').style.backgroundColor = t.line;
+        el.querySelector('.slide-footer').style.color = t.text;
+    }
+
+    function setSlideTheme(sid, tid) {
+        state.slides.find(x => x.id === sid).themeId = parseInt(tid);
+        applySlideStyle(sid);
+    }
+
+    function updateDropdowns() {
+        document.querySelectorAll('.t-sel').forEach(s => {
+            const v = s.value;
+            s.innerHTML = state.themes.map(t=>`<option value="${t.id}" ${t.id==v?'selected':''}>${t.name}</option>`).join('');
+        });
+    }
+
+    function syncBranding() {
+        state.fLeft = document.getElementById('m-footer-l').value;
+        state.fRight = document.getElementById('m-footer-r').value;
+        document.querySelectorAll('.fl').forEach(x => x.innerText = state.fLeft);
+        document.querySelectorAll('.fr').forEach(x => x.innerText = state.fRight);
+        localStorage.setItem('hc_fl_v3', state.fLeft);
+        localStorage.setItem('hc_fr_v3', state.fRight);
+    }
+
+    function removeSlide(id) {
+        state.slides = state.slides.filter(x => x.id !== id);
+        document.getElementById(`side-${id}`).remove();
+        document.getElementById(`canv-${id}`).remove();
+    }
+
+    async function exportPDF() {
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF('p', 'px', [1080, 1350]);
+        // Hide guides
+        document.querySelectorAll('.boundary-guide').forEach(g => g.style.display = 'none');
+
+        const slides = document.querySelectorAll('.slide');
+        for (let i = 0; i < slides.length; i++) {
+            const canvas = await html2canvas(slides[i], { scale: 3, useCORS: true });
+            if (i > 0) pdf.addPage([1080, 1350], 'p');
+            pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, 1080, 1350);
+        }
+        
+        // Show guides again
+        document.querySelectorAll('.boundary-guide').forEach(g => g.style.display = 'block');
+        pdf.save("Hostcode-Carousel.pdf");
+    }
+
+    init();
+</script>
+</body>
+</html>
